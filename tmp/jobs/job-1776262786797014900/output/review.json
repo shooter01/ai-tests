@@ -1,0 +1,22 @@
+{
+  "summary": "Добавлены проверки на корректность входных параметров и изменены сообщения об ошибках.",
+  "findings": [
+    {
+      "severity": "high",
+      "path": "services/enterprise/delete.go",
+      "title": "Изменение поведения при отсутствии участника enterprise",
+      "comment": "Теперь возвращается ErrMemberNotFound вместо nil, что может привести к неразборчивости ошибок.",
+      "confidence": "high"
+    },
+    {
+      "severity": "medium",
+      "path": "routers/api/enterprise.go",
+      "title": "Добавление обработки некорректных параметров",
+      "comment": "Если enterpriseID или userID \u003c= 0, возвращается HTTP-статус 400 с сообщением 'bad params'. Это может привести к неожиданному поведению.",
+      "confidence": "medium"
+    }
+  ],
+  "suggestions": [
+    "Рассмотрите возможность использования HTTP-статусов для разных типов ошибок."
+  ]
+}

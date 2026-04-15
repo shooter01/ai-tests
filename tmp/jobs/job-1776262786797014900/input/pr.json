@@ -1,0 +1,18 @@
+{
+  "id": 1,
+  "repo": "example/repo",
+  "title": "Fix nil handling in enterprise member removal",
+  "description": "Добавил проверки параметров и изменил поведение при отсутствии участника enterprise.",
+  "base_branch": "main",
+  "head_branch": "feature/enterprise-delete-fix",
+  "files": [
+    {
+      "path": "services/enterprise/delete.go",
+      "patch": "@@ -10,6 +10,14 @@\n func DeleteEnterpriseMember(ctx *context.Context, enterpriseID, userID int64) error {\n+   if enterpriseID == 0 {\n+       return fmt.Errorf(\"enterprise id is required\")\n+   }\n+\n    member, err := getEnterpriseMember(ctx, enterpriseID, userID)\n    if err != nil {\n        return err\n    }\n@@ -40,7 +48,7 @@\n-   if member == nil {\n-       return nil\n+   if member == nil {\n+       return ErrMemberNotFound\n    }\n\n    return removeFromAllOrgs(ctx, member)\n}\n"
+    },
+    {
+      "path": "routers/api/enterprise.go",
+      "patch": "@@ -22,6 +22,10 @@\n func DeleteEnterpriseMember(ctx *context.Context) {\n    enterpriseID := ctx.PathParamInt64(\"enterpriseID\")\n    userID := ctx.PathParamInt64(\"userID\")\n+\n+   if enterpriseID \u003c= 0 || userID \u003c= 0 {\n+       ctx.JSON(http.StatusBadRequest, map[string]string{\"message\": \"bad params\"})\n+       return\n+   }\n\n    err := enterprise_service.DeleteEnterpriseMember(ctx, enterpriseID, userID)\n    if err != nil {\n        handleError(ctx, err)\n"
+    }
+  ]
+}

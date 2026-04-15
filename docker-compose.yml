@@ -1,0 +1,24 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  reviewer:
+    image: test-orch-reviewer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.reviewer
+
+volumes:
+  ollama:
