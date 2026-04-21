@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,136 @@ import (
 )
 
 var reviewPrompt string
+
+type reviewIssue struct {
+	File       string `json:"file"`
+	Line       int    `json:"line"`
+	Severity   string `json:"severity"`
+	Category   string `json:"category"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion"`
+}
+
+type reviewResult struct {
+	Summary string        `json:"summary"`
+	Issues  []reviewIssue `json:"issues"`
+	Verdict string        `json:"verdict"`
+}
+
+var trailingCommaRe = regexp.MustCompile(`,(\s*[\]}])`)
+
+func sanitizeJSON(s string) string {
+	s = strings.TrimSpace(s)
+
+	// снимаем ```json / ``` в начале и ``` в конце
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimSpace(s)
+
+	// отрезаем текст до первого '{' и после последнего '}'
+	if i := strings.Index(s, "{"); i > 0 {
+		s = s[i:]
+	}
+	if j := strings.LastIndex(s, "}"); j >= 0 && j < len(s)-1 {
+		s = s[:j+1]
+	}
+
+	// чиним висячие запятые: "...},]" и "...],}"
+	s = trailingCommaRe.ReplaceAllString(s, "$1")
+
+	return s
+}
+func formatComment(reviewJSON string) string {
+	var r reviewResult
+	var r reviewResult
+	if err := json.Unmarshal([]byte(reviewJSON), &r); err != nil {
+		log.Printf("formatComment: JSON unmarshal failed: %v", err)
+		return "### 🤖 Auto review (GigaChat)\n\n" +
+			"_Модель вернула невалидный JSON, ниже сырой ответ:_\n\n" +
+			"```\n" + reviewJSON + "\n```"
+	}
+
+	var b strings.Builder
+
+	// шапка
+	b.WriteString("### 🤖 Auto review (GigaChat)\n\n")
+
+	// вердикт эмодзи
+	switch strings.ToLower(r.Verdict) {
+	case "approve":
+		b.WriteString("**Verdict:** ✅ approve\n\n")
+	case "request_changes":
+		b.WriteString("**Verdict:** ❌ request changes\n\n")
+	default:
+		b.WriteString("**Verdict:** " + r.Verdict + "\n\n")
+	}
+
+	// summary
+	if r.Summary != "" {
+		b.WriteString("**Summary:** " + r.Summary + "\n\n")
+	}
+
+	// если issues нет — короткий ответ и уходим
+	if len(r.Issues) == 0 {
+		b.WriteString("_No issues found._\n")
+		return b.String()
+	}
+
+	// таблица issues
+	b.WriteString("| # | Severity | Category | File:Line | Problem |\n")
+	b.WriteString("|---|----------|----------|-----------|---------|\n")
+	for i, iss := range r.Issues {
+		loc := iss.File
+		if iss.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", iss.File, iss.Line)
+		}
+		b.WriteString(fmt.Sprintf(
+			"| %d | %s | `%s` | `%s` | %s |\n",
+			i+1, sevEmoji(iss.Severity), iss.Category, loc, escapeCell(iss.Message),
+		))
+	}
+	b.WriteString("\n")
+
+	// подробности с suggestion
+	b.WriteString("<details><summary>Details & suggestions</summary>\n\n")
+	for i, iss := range r.Issues {
+		loc := iss.File
+		if iss.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", iss.File, iss.Line)
+		}
+		fmt.Fprintf(&b, "**%d. %s — `%s` at `%s`**\n\n", i+1, sevEmoji(iss.Severity), iss.Category, loc)
+		fmt.Fprintf(&b, "- Problem: %s\n", iss.Message)
+		if iss.Suggestion != "" {
+			fmt.Fprintf(&b, "- Suggestion: %s\n", iss.Suggestion)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("</details>\n")
+
+	return b.String()
+}
+
+func sevEmoji(s string) string {
+	switch strings.ToLower(s) {
+	case "critical":
+		return "🔴 critical"
+	case "high":
+		return "🟠 high"
+	case "medium":
+		return "🟡 medium"
+	case "low":
+		return "🟢 low"
+	}
+	return s
+}
+
+// экранируем символы, которые ломают markdown-таблицы
+func escapeCell(s string) string {
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
 
 func stripCodeFence(s string) string {
 	s = strings.TrimSpace(s)
@@ -346,16 +477,18 @@ func processPR(p giteaPRHook) {
 		return
 	}
 
-	reviewJSON = stripCodeFence(reviewJSON)
+	reviewJSON = sanitizeJSON(reviewJSON)
 
 	if strings.TrimSpace(reviewJSON) == "" {
 		log.Printf("opencode returned empty output, skip comment")
 		return
 	}
 
-	if !json.Valid([]byte(reviewJSON)) {
-		log.Printf("opencode output is not valid JSON, posting as-is")
+	// formatComment сам распарсит. Не парсит — отдаст fallback с текстом.
+	if err := postComment(repo, p.Number, formatComment(reviewJSON)); err != nil {
+		log.Printf("post comment: %v", err)
 	}
+	reviewJSON = stripCodeFence(reviewJSON)
 
 	if err := postComment(repo, p.Number, formatComment(reviewJSON)); err != nil {
 		log.Printf("post comment: %v", err)
@@ -415,10 +548,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "...[truncated]"
-}
-
-func formatComment(reviewJSON string) string {
-	return "### 🤖 Auto review (GigaChat)\n\n```json\n" + reviewJSON + "\n```"
 }
 
 // ---------- утилиты ----------
