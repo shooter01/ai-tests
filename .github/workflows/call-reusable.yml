@@ -1,0 +1,10 @@
+name: Call Reusable Echo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  call-echo:
+    uses: ./.github/workflows/reusable-echo.yml
+    with:
+      message: "Привет из caller workflow"
