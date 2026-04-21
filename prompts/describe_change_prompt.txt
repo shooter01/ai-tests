@@ -1,0 +1,18 @@
+Analyze only the following pull request data.
+
+Return STRICT JSON ONLY.
+
+Return exactly this structure:
+
+{
+  "summary": "string",
+  "behavior_changes": ["string"],
+  "validation_changes": ["string"],
+  "api_changes": ["string"],
+  "files_touched": ["string"]
+}
+
+Use only visible facts from the provided diff.
+Do not return findings, suggestions, or any extra fields.
+
+{{PUT_PR_DATA_HERE}}

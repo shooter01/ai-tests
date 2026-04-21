@@ -1,0 +1,9 @@
+Calculate this expression: 17 * 23 + 5
+
+Return the answer in Markdown only, exactly in this format:
+
+# Math Result
+
+Expression: `17 * 23 + 5`
+
+Result: `<number>`

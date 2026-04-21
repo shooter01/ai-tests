@@ -1,0 +1,19 @@
+{
+  "summary": "This pull request fixes nil handling in enterprise member removal by adding input validation and changing the behavior when an enterprise member is not found. Previously, the function would silently return nil when a member was not found, but now it returns a specific error. The API endpoint also now validates input parameters and returns a bad request response for invalid inputs.",
+  "behavior_changes": [
+    "Changed behavior when enterprise member is not found from silent success (returning nil) to returning ErrMemberNotFound error",
+    "Added input validation for enterpriseID and userID parameters in the API endpoint to return HTTP 400 for invalid inputs"
+  ],
+  "validation_changes": [
+    "Added validation in DeleteEnterpriseMember function to require enterpriseID > 0",
+    "Added validation in DeleteEnterpriseMember API endpoint to require both enterpriseID > 0 and userID > 0"
+  ],
+  "api_changes": [
+    "API endpoint now returns HTTP 400 with message \"bad params\" for invalid enterpriseID or userID inputs",
+    "API endpoint now properly handles ErrMemberNotFound error by returning appropriate error response"
+  ],
+  "files_touched": [
+    "services/enterprise/delete.go",
+    "routers/api/enterprise.go"
+  ]
+}

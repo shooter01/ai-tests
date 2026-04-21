@@ -1,0 +1,43 @@
+Repository: example/repo
+Pull Request ID: 42
+Title: Fix nil handling in enterprise member removal
+Description: Added input validation and changed behavior when enterprise member is missing.
+Base branch: main
+Head branch: feature/enterprise-delete-fix
+
+File: services/enterprise/delete.go
+```diff
+@@ -10,6 +10,14 @@
+ func DeleteEnterpriseMember(ctx *context.Context, enterpriseID, userID int64) error {
++   if enterpriseID == 0 {
++       return fmt.Errorf("enterprise id is required")
++   }
++
+    member, err := getEnterpriseMember(ctx, enterpriseID, userID)
+    if err != nil {
+        return err
+    }
+@@ -40,7 +48,7 @@
+-   if member == nil {
+-       return nil
++   if member == nil {
++       return ErrMemberNotFound
+    }
+
+    return removeFromAllOrgs(ctx, member)
+}
+File: routers/api/enterprise.go
+
+@@ -22,6 +22,10 @@
+ func DeleteEnterpriseMember(ctx *context.Context) {
+    enterpriseID := ctx.PathParamInt64("enterpriseID")
+    userID := ctx.PathParamInt64("userID")
++
++   if enterpriseID <= 0 || userID <= 0 {
++       ctx.JSON(http.StatusBadRequest, map[string]string{"message": "bad params"})
++       return
++   }
+
+    err := enterprise_service.DeleteEnterpriseMember(ctx, enterpriseID, userID)
+    if err != nil {
+        handleError(ctx, err)

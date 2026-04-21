@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -64,23 +64,20 @@ type JobStore struct {
 }
 
 func NewJobStore() *JobStore {
-	return &JobStore{
-		jobs: make(map[string]*Job),
-	}
+	return &JobStore{jobs: make(map[string]*Job)}
 }
 
 func (s *JobStore) Create(skill string) *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
-	id := fmt.Sprintf("job-%d", now.UnixNano())
+	id := fmt.Sprintf("job-%d", time.Now().UnixNano())
 	job := &Job{
 		ID:        id,
 		Status:    "queued",
 		Skill:     skill,
-		CreatedAt: now,
-		UpdatedAt: now,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 	s.jobs[id] = job
 	return job
@@ -89,40 +86,31 @@ func (s *JobStore) Create(skill string) *Job {
 func (s *JobStore) SetRunning(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	job, ok := s.jobs[id]
-	if !ok {
-		return
+	if job, ok := s.jobs[id]; ok {
+		job.Status = "running"
+		job.UpdatedAt = time.Now().UTC()
 	}
-	job.Status = "running"
-	job.UpdatedAt = time.Now().UTC()
 }
 
 func (s *JobStore) SetDone(id string, result *ReviewOutput) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	job, ok := s.jobs[id]
-	if !ok {
-		return
+	if job, ok := s.jobs[id]; ok {
+		job.Status = "done"
+		job.Result = result
+		job.Error = ""
+		job.UpdatedAt = time.Now().UTC()
 	}
-	job.Status = "done"
-	job.Result = result
-	job.Error = ""
-	job.UpdatedAt = time.Now().UTC()
 }
 
 func (s *JobStore) SetError(id, errText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	job, ok := s.jobs[id]
-	if !ok {
-		return
+	if job, ok := s.jobs[id]; ok {
+		job.Status = "error"
+		job.Error = errText
+		job.UpdatedAt = time.Now().UTC()
 	}
-	job.Status = "error"
-	job.Error = errText
-	job.UpdatedAt = time.Now().UTC()
 }
 
 func (s *JobStore) Get(id string) (*Job, bool) {
@@ -133,7 +121,6 @@ func (s *JobStore) Get(id string) (*Job, bool) {
 	if !ok {
 		return nil, false
 	}
-
 	cp := *job
 	return &cp, true
 }
@@ -146,83 +133,182 @@ func getenv(key, fallback string) string {
 	return v
 }
 
-func dockerPath(p string) string {
-	return strings.ReplaceAll(p, "\\", "/")
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n... [truncated]"
 }
 
-func runReviewJob(jobID string, req StartJobRequest, store *JobStore, reviewerImage, dockerNetwork, model, tmpRoot string) {
+func buildPrompt(pr PRInput) string {
+	var b strings.Builder
+
+	b.WriteString("You are a strict senior code reviewer.\n")
+	b.WriteString("Review this pull request diff and return strict JSON only.\n")
+	b.WriteString("Do not wrap the answer in markdown fences.\n")
+	b.WriteString("Do not add commentary before or after the JSON.\n")
+	b.WriteString("The response must start with { and end with }.\n\n")
+
+	b.WriteString("Return exactly this structure:\n")
+	b.WriteString("{\n")
+	b.WriteString(`  "summary": "string",` + "\n")
+	b.WriteString(`  "findings": [` + "\n")
+	b.WriteString(`    {` + "\n")
+	b.WriteString(`      "severity": "high|medium|low",` + "\n")
+	b.WriteString(`      "path": "string",` + "\n")
+	b.WriteString(`      "title": "string",` + "\n")
+	b.WriteString(`      "comment": "string",` + "\n")
+	b.WriteString(`      "confidence": "high|medium|low"` + "\n")
+	b.WriteString(`    }` + "\n")
+	b.WriteString(`  ],` + "\n")
+	b.WriteString(`  "suggestions": ["string"]` + "\n")
+	b.WriteString("}\n\n")
+
+	b.WriteString("Rules:\n")
+	b.WriteString("- Only analyze visible facts from the diff.\n")
+	b.WriteString("- Do not invent hidden code, hidden files, hidden flows, or hidden bugs.\n")
+	b.WriteString("- Prioritize semantic changes over style comments.\n")
+	b.WriteString("- Pay special attention to:\n")
+	b.WriteString("  - changed return values\n")
+	b.WriteString("  - nil -> error changes\n")
+	b.WriteString("  - changed function contracts\n")
+	b.WriteString("  - changed HTTP response behavior\n")
+	b.WriteString("  - compatibility risks for callers\n")
+	b.WriteString("- If a function previously returned nil and now returns an error, treat it as a potentially important semantic change.\n")
+	b.WriteString("- Do not ignore behavior changes even if input validation changes are also present.\n")
+	b.WriteString("- Before deciding there are no findings, explicitly check:\n")
+	b.WriteString("  - return value changes\n")
+	b.WriteString("  - error behavior changes\n")
+	b.WriteString("  - API contract changes\n")
+	b.WriteString("  - caller compatibility risks\n")
+	b.WriteString("- If there are no reliable findings, return an empty findings array.\n")
+	b.WriteString("- Maximum 5 findings.\n")
+	b.WriteString("- Maximum 3 suggestions.\n")
+	b.WriteString("- Do not give generic advice like 'add tests' or 'improve readability' unless the diff clearly justifies it.\n\n")
+
+	b.WriteString("Repository:\n")
+	b.WriteString(pr.Repo + "\n\n")
+
+	b.WriteString("Pull Request Title:\n")
+	b.WriteString(pr.Title + "\n\n")
+
+	b.WriteString("Pull Request Description:\n")
+	b.WriteString(pr.Description + "\n\n")
+
+	b.WriteString("Base branch:\n")
+	b.WriteString(pr.BaseBranch + "\n\n")
+
+	b.WriteString("Head branch:\n")
+	b.WriteString(pr.HeadBranch + "\n\n")
+
+	b.WriteString("Changed files and diffs:\n")
+	for _, f := range pr.Files {
+		b.WriteString("\nFile: " + f.Path + "\n")
+		b.WriteString("```diff\n")
+		b.WriteString(truncate(f.Patch, 4000))
+		b.WriteString("\n```\n")
+	}
+
+	return b.String()
+}
+
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return strings.TrimSpace(s)
+}
+
+type OpenCodeEvent struct {
+	Type string `json:"type"`
+	Part struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"part"`
+}
+
+func runOpenCodeAndCollectText(
+	ctx context.Context,
+	opencodeBin string,
+	model string,
+	prompt string,
+	projectDir string,
+) (string, string, error) {
+	args := []string{
+		"run",
+		"--model", model,
+		"--format", "json",
+		prompt,
+	}
+
+	cmd := exec.CommandContext(ctx, opencodeBin, args...)
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(), "OPENCODE_DISABLE_DEFAULT_PLUGINS=true")
+
+	out, err := cmd.CombinedOutput()
+	raw := string(out)
+	if err != nil {
+		return "", raw, fmt.Errorf("opencode failed: %w", err)
+	}
+
+	var finalText strings.Builder
+
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	// На всякий случай увеличим буфер, если ответ будет длиннее дефолтных 64KB.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 2*1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var ev OpenCodeEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			// Пропускаем не-JSON строки, если вдруг они попадутся.
+			continue
+		}
+
+		if ev.Type == "text" && ev.Part.Type == "text" {
+			finalText.WriteString(ev.Part.Text)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", raw, fmt.Errorf("scan opencode output failed: %w", err)
+	}
+
+	text := strings.TrimSpace(finalText.String())
+	if text == "" {
+		return "", raw, fmt.Errorf("no text response found in opencode events")
+	}
+
+	return text, raw, nil
+}
+
+func runOpenCode(jobID string, req StartJobRequest, store *JobStore, opencodeBin, model, agent, projectDir string) {
 	store.SetRunning(jobID)
-
-	jobDir := filepath.Join(tmpRoot, jobID)
-	inputDir := filepath.Join(jobDir, "input")
-	outputDir := filepath.Join(jobDir, "output")
-
-	if err := os.MkdirAll(inputDir, 0o755); err != nil {
-		store.SetError(jobID, "mkdir input dir: "+err.Error())
-		return
-	}
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		store.SetError(jobID, "mkdir output dir: "+err.Error())
-		return
-	}
-
-	inputPath := filepath.Join(inputDir, "pr.json")
-	outputPath := filepath.Join(outputDir, "review.json")
-
-	rawInput, err := json.MarshalIndent(req.PR, "", "  ")
-	if err != nil {
-		store.SetError(jobID, "marshal pr json: "+err.Error())
-		return
-	}
-	if err := os.WriteFile(inputPath, rawInput, 0o644); err != nil {
-		store.SetError(jobID, "write input file: "+err.Error())
-		return
-	}
-
-	absInputDir, err := filepath.Abs(inputDir)
-	if err != nil {
-		store.SetError(jobID, "abs input dir: "+err.Error())
-		return
-	}
-	absOutputDir, err := filepath.Abs(outputDir)
-	if err != nil {
-		store.SetError(jobID, "abs output dir: "+err.Error())
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	args := []string{
-		"run",
-		"--rm",
-		"--network", dockerNetwork,
-		"--mount", "type=bind,source=" + dockerPath(absInputDir) + ",target=/input,readonly",
-		"--mount", "type=bind,source=" + dockerPath(absOutputDir) + ",target=/output",
-		"-e", "OLLAMA_URL=http://ollama:11434/api/generate",
-		"-e", "MODEL=" + model,
-		reviewerImage,
-		req.Skill,
-		"/input/pr.json",
-		"/output/review.json",
-	}
+	prompt := buildPrompt(req.PR)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		store.SetError(jobID, "docker run failed: "+err.Error()+"; output: "+string(out))
-		return
-	}
+	// Если позже захочешь реально использовать agent, можно добавить:
+	// prompt = "Use the review workflow.\n\n" + prompt
+	_ = agent // пока не используем, чтобы не было tool/skill-шума
 
-	rawResult, err := os.ReadFile(outputPath)
+	text, raw, err := runOpenCodeAndCollectText(ctx, opencodeBin, model, prompt, projectDir)
 	if err != nil {
-		store.SetError(jobID, "read output file: "+err.Error())
+		store.SetError(jobID, err.Error()+"; raw: "+raw)
 		return
 	}
 
 	var result ReviewOutput
-	if err := json.Unmarshal(rawResult, &result); err != nil {
-		store.SetError(jobID, "parse output json: "+err.Error()+"; raw: "+string(rawResult))
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		store.SetError(jobID, "parse review json failed: "+err.Error()+"; text: "+text+"; raw: "+raw)
 		return
 	}
 
@@ -231,22 +317,22 @@ func runReviewJob(jobID string, req StartJobRequest, store *JobStore, reviewerIm
 
 func main() {
 	port := getenv("PORT", "8081")
-	reviewerImage := getenv("REVIEWER_IMAGE", "test-orch-reviewer:latest")
-	dockerNetwork := getenv("DOCKER_NETWORK", "test-orch_default")
-	model := getenv("MODEL", "qwen2.5-coder:7b")
-	tmpRoot := getenv("TMP_ROOT", "./tmp/jobs")
+	opencodeBin := getenv("OPENCODE_BIN", "opencode")
+	model := getenv("OPENCODE_MODEL", "ollama/qwen2.5-coder:7b")
+	agent := getenv("OPENCODE_AGENT", "review")
+	projectDir := getenv("PROJECT_DIR", ".")
 
 	store := NewJobStore()
-
 	r := gin.Default()
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"service":        "factory",
 			"status":         "ok",
-			"reviewer_image": reviewerImage,
-			"docker_network": dockerNetwork,
-			"model":          model,
+			"opencode_bin":   opencodeBin,
+			"opencode_model": model,
+			"opencode_agent": agent,
+			"project_dir":    projectDir,
 		})
 	})
 
@@ -268,8 +354,7 @@ func main() {
 		}
 
 		job := store.Create(req.Skill)
-
-		go runReviewJob(job.ID, req, store, reviewerImage, dockerNetwork, model, tmpRoot)
+		go runOpenCode(job.ID, req, store, opencodeBin, model, agent, projectDir)
 
 		c.JSON(202, gin.H{
 			"job_id": job.ID,

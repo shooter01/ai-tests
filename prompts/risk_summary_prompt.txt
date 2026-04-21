@@ -1,0 +1,26 @@
+Analyze only the following pull request data.
+
+Return STRICT JSON ONLY.
+
+Return exactly this structure:
+
+{
+  "overall_risk": "low|medium|high",
+  "breaking_change": true,
+  "risks": [
+    {
+      "severity": "high|medium|low",
+      "path": "string",
+      "title": "string",
+      "impact": "string",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "release_notes": ["string"]
+}
+
+Use only visible facts from the provided diff.
+Focus only on compatibility, behavior, contract, and rollout risks.
+Do not return findings, suggestions, or any extra fields.
+
+{{PUT_PR_DATA_HERE}}

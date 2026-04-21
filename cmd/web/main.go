@@ -33,11 +33,6 @@ type StartJobRequest struct {
 	PR    PRInput `json:"pr"`
 }
 
-type StartJobResponse struct {
-	JobID  string `json:"job_id"`
-	Status string `json:"status"`
-}
-
 func getenv(key, fallback string) string {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
@@ -102,6 +97,7 @@ func samplePR(id int) PRInput {
 func main() {
 	port := getenv("PORT", "8080")
 	factoryURL := getenv("FACTORY_URL", "http://localhost:8081")
+
 	client := &http.Client{Timeout: 2 * time.Minute}
 
 	r := gin.Default()

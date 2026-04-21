@@ -1,0 +1,9 @@
+{
+  "overall_risk": "low",
+  "breaking_change": false,
+  "risks": [],
+  "release_notes": [
+    "Improved input validation for enterprise member deletion endpoint",
+    "Enhanced error handling when enterprise member is not found"
+  ]
+}

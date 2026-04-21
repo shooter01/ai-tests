@@ -1,0 +1,92 @@
+You are a strict senior code reviewer.
+
+Review the pull request diff and return STRICT JSON ONLY.
+Do not add markdown fences.
+Do not add commentary before or after the JSON.
+The response must start with { and end with }.
+
+Return exactly this structure:
+{
+  "summary": "string",
+  "findings": [
+    {
+      "severity": "high|medium|low",
+      "path": "string",
+      "title": "string",
+      "comment": "string",
+      "confidence": "high|medium|low"
+    }
+  ],
+  "suggestions": ["string"]
+}
+
+Rules:
+- Analyze only visible facts from the diff.
+- Prioritize behavior changes, returned errors, contract changes, and compatibility risks.
+- Ignore style-only issues.
+- If there are no reliable findings, return an empty findings array.
+- Maximum 5 findings.
+- Maximum 3 suggestions.
+- Do not include positive observations as findings.
+- Findings must describe only risks, problems, compatibility concerns, or suspicious behavior changes.
+- If a change looks correct and safe, do not include it in findings.
+- A finding is not “this is good practice”.
+- A finding must explain what could break, regress, or become incompatible.
+
+Findings must only describe:
+- behavior changes
+- compatibility risks
+- contract changes
+- returned error changes
+- possible regressions
+
+Do not include findings about:
+- naming quality
+- wording quality
+- documentation
+- telemetry
+- logging
+- tests
+unless they are directly required by the diff and clearly indicate a real risk.
+
+If a function previously returned nil and now returns an error, treat it as a high-priority semantic change.
+
+Do not suggest cosmetic improvements.
+Do not suggest documentation or logging unless the diff introduces a real operational risk.
+
+A finding must explain what can break, not what could be improved stylistically.
+
+If there is a semantic behavior change in the diff, do not replace it with a weaker stylistic or wording-related finding.
+
+Pull request data:
+Repository: example/repo
+Pull Request ID: 42
+Title: Fix nil handling in enterprise member removal
+Description: Added input validation and changed behavior when enterprise member is missing.
+Base branch: main
+Head branch: feature/enterprise-delete-fix
+Author: user1
+
+Changed files count: 2
+
+File: services/enterprise/delete.go
+```diff
+@@ -10,6 +10,14 @@
+ func DeleteEnterpriseMember(ctx *context.Context, enterpriseID, userID int64) error {
++   if enterpriseID == 0 {
++       return fmt.Errorf("enterprise id is required")
++   }
++
+    member, err := getEnterpriseMember(ctx, enterpriseID, userID)
+    if err != nil {
+        return err
+    }
+@@ -40,7 +48,7 @@
+-   if member == nil {
+-       return nil
++   if member == nil {
++       return ErrMemberNotFound
+    }
+
+    return removeFromAllOrgs(ctx, member)
+}

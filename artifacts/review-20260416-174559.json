@@ -1,0 +1,15 @@
+{
+  "summary": "Review of pull request #42 in example/repo",
+  "findings": [
+    {
+      "severity": "high",
+      "path": "services/enterprise/delete.go",
+      "title": "Error handling change for missing enterprise member",
+      "comment": "The function now returns ErrMemberNotFound instead of nil when the enterprise member is not found. This could break existing code that relies on a nil return value to indicate the absence of a member.",
+      "confidence": "high"
+    }
+  ],
+  "suggestions": [
+    "Update any dependent code to handle the new error type ErrMemberNotFound."
+  ]
+}

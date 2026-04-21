@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "gigachat": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "GigaChat",
+      "options": {
+        "baseURL": "https://gigachat.devices.sberbank.ru/api/v1",
+        "apiKey": "{env:GIGACHAT_TOKEN}",
+        "headers": {
+          "X-Client-ID": "postman-request-collection"
+        }
+      },
+      "models": {
+        "GigaChat-2": { "name": "GigaChat 2" },
+        "GigaChat-2-Max": { "name": "GigaChat 2 Max" }
+      }
+    }
+  },
+  "model": "gigachat/GigaChat-2",
+  "agent": {
+    "review": {
+      "description": "Strict JSON code review agent",
+      "prompt": "{file:./.opencode/agents/review.md}"
+    }
+  },
+  "permission": {
+    "edit": "deny",
+    "bash": "deny",
+    "webfetch": "deny"
+  }
+}
