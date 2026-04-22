@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -65,7 +66,6 @@ func sanitizeJSON(s string) string {
 	return s
 }
 func formatComment(reviewJSON string) string {
-	var r reviewResult
 	var r reviewResult
 	if err := json.Unmarshal([]byte(reviewJSON), &r); err != nil {
 		log.Printf("formatComment: JSON unmarshal failed: %v", err)
@@ -203,10 +203,11 @@ var (
 	giteaBaseURL  string
 	giteaToken    string
 	// gigachatToken string
-	opencodeImage string
-	opencodeModel string
-	opencodeAgent string
-	workdirOnHost string
+	opencodeImage     string
+	opencodeModel     string
+	opencodeAgent     string
+	workdirOnHost     string
+	giteaCloneBaseURL string
 )
 
 var (
@@ -217,6 +218,25 @@ var (
 	gigaToken  string
 	gigaExpiry time.Time
 )
+
+func buildCloneURL(repoFullName string) string {
+	base := strings.TrimRight(giteaCloneBaseURL, "/")
+	token := os.Getenv("GITEA_TOKEN")
+	if token == "" {
+		return fmt.Sprintf("%s/%s.git", base, repoFullName)
+	}
+
+	u, err := url.Parse(base)
+	if err != nil {
+		log.Printf("bad GITEA_CLONE_BASE_URL %q: %v", base, err)
+		return fmt.Sprintf("%s/%s.git", base, repoFullName)
+	}
+
+	// Для Gitea часто работает oauth2:<token>
+	u.User = url.UserPassword("oauth2", token)
+	u.Path = strings.TrimRight(u.Path, "/") + "/" + repoFullName + ".git"
+	return u.String()
+}
 
 func loadConfig() {
 	if err := godotenv.Load(); err != nil {
@@ -233,6 +253,7 @@ func loadConfig() {
 	workdirOnHost = getenv("WORKDIR_ON_HOST", mustCwd())
 	gigachatAuthKey = os.Getenv("GIGACHAT_AUTH_KEY")
 	gigachatScope = getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+	giteaCloneBaseURL = getenv("GITEA_CLONE_BASE_URL", "http://host.docker.internal:3000")
 	if gigachatAuthKey == "" {
 		log.Fatal("GIGACHAT_AUTH_KEY is required (base64 of client_id:client_secret)")
 	}
@@ -451,6 +472,55 @@ func handleHook(w http.ResponseWriter, r *http.Request) {
 	go processPR(p)
 	w.WriteHeader(http.StatusAccepted)
 }
+
+type prDetails struct {
+	Head struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			CloneURL string `json:"clone_url"`
+			HTMLURL  string `json:"html_url"`
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+	Base struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			CloneURL string `json:"clone_url"`
+			HTMLURL  string `json:"html_url"`
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"base"`
+}
+
+func fetchPRDetails(repoFullName string, prNumber int) (*prDetails, error) {
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d", giteaBaseURL, repoFullName, prNumber)
+	log.Printf("fetch pr: GET %s", url)
+
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	setGiteaHeaders(req)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("pull %d for %s: %s", resp.StatusCode, url, strings.TrimSpace(string(raw)))
+	}
+
+	var pr prDetails
+	if err := json.Unmarshal(raw, &pr); err != nil {
+		return nil, fmt.Errorf("parse pull details: %w", err)
+	}
+
+	if pr.Head.Ref == "" {
+		return nil, fmt.Errorf("pull details missing head.ref")
+	}
+
+	return &pr, nil
+}
 func processPR(p giteaPRHook) {
 	repo := p.Repository.FullName
 	log.Printf("PR #%d in %s: %s", p.Number, repo, p.PullRequest.Title)
@@ -461,34 +531,46 @@ func processPR(p giteaPRHook) {
 		return
 	}
 
+	pr, err := fetchPRDetails(repo, p.Number)
+	if err != nil {
+		log.Printf("fetch pr details: %v", err)
+		return
+	}
+
+	headRef := pr.Head.Ref
+	baseRef := pr.Base.Ref
+	log.Printf("PR refs: head=%q base=%q", headRef, baseRef)
+
 	prompt := fmt.Sprintf(
 		"%s\n\n"+
 			"=== TASK ===\n"+
+			"Ты находишься в корне клонированного git-репозитория.\n\n"+
 			"PR: %s\n"+
-			"Проанализируй следующий diff согласно инструкциям выше. "+
-			"Верни ТОЛЬКО JSON, как описано в формате ответа.\n\n"+
+			"Head branch: %s\n"+
+			"Base branch: %s\n\n"+
+			"Diff ниже — это именно то, что изменилось в этом PR.\n\n"+
+			"Ответ — строго JSON по схеме (summary, issues[], verdict). Без markdown-обёрток.\n\n"+
 			"=== BEGIN DIFF ===\n%s\n=== END DIFF ===",
-		reviewPrompt, p.PullRequest.Title, diff,
+		reviewPrompt,
+		p.PullRequest.Title,
+		headRef,
+		baseRef,
+		diff,
 	)
 
-	reviewJSON, err := runOpencode(prompt)
+	cloneURL := buildCloneURL(repo)
+
+	reviewJSON, err := runOpencode(cloneURL, headRef, prompt)
 	if err != nil {
 		log.Printf("opencode: %v", err)
 		return
 	}
 
-	reviewJSON = sanitizeJSON(reviewJSON)
-
+	reviewJSON = stripCodeFence(sanitizeJSON(reviewJSON))
 	if strings.TrimSpace(reviewJSON) == "" {
 		log.Printf("opencode returned empty output, skip comment")
 		return
 	}
-
-	// formatComment сам распарсит. Не парсит — отдаст fallback с текстом.
-	if err := postComment(repo, p.Number, formatComment(reviewJSON)); err != nil {
-		log.Printf("post comment: %v", err)
-	}
-	reviewJSON = stripCodeFence(reviewJSON)
 
 	if err := postComment(repo, p.Number, formatComment(reviewJSON)); err != nil {
 		log.Printf("post comment: %v", err)
@@ -499,7 +581,7 @@ func processPR(p giteaPRHook) {
 
 // ---------- запуск opencode ----------
 
-func runOpencode(prompt string) (string, error) {
+func runOpencode(cloneURL, branch, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -509,13 +591,15 @@ func runOpencode(prompt string) (string, error) {
 	}
 
 	args := []string{
-		"run", "--rm", "-i",
+		"run", "--rm",
 		"-e", "GIGACHAT_TOKEN=" + tok,
 		"-e", "NODE_TLS_REJECT_UNAUTHORIZED=0",
-		"-v", workdirOnHost + ":/work",
-		"-w", "/work",
+		"-e", "GIT_CLONE_URL=" + cloneURL,
+		"-e", "GIT_BRANCH=" + branch,
+		"-e", "OPENCODE_MODEL=" + opencodeModel,
+		"-e", "REVIEW_PROMPT=" + prompt,
+		"-v", workdirOnHost + ":/config:ro",
 		opencodeImage,
-		"run", "--model", opencodeModel, prompt,
 	}
 
 	cmd := exec.CommandContext(ctx, "docker", args...)

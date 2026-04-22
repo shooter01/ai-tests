@@ -1,14 +1,15 @@
 FROM node:20-slim
 
-ENV NODE_TLS_REJECT_UNAUTHORIZED=0
-ENV OPENCODE_CONFIG_DIR=/opt/opencode-config
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g opencode-ai@1.14.19
+    && npm install -g opencode-ai
 
-COPY docker/opencode-config /opt/opencode-config
+# entrypoint-скрипт — клонирует репо и зовёт opencode
+COPY review-entrypoint.sh /usr/local/bin/review-entrypoint.sh
+RUN chmod +x /usr/local/bin/review-entrypoint.sh
 
-WORKDIR /runner
-ENTRYPOINT ["opencode"]
+# чтобы git не спрашивал логин/пароль в TTY
+ENV GIT_TERMINAL_PROMPT=0
+
+ENTRYPOINT ["/usr/local/bin/review-entrypoint.sh"]

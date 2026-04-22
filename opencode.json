@@ -21,12 +21,16 @@
   "agent": {
     "review": {
       "description": "Strict JSON code review agent",
-      "prompt": "{file:./.opencode/agents/review.md}"
+      "prompt": "{file:./agents/review.md}"
     }
   },
   "permission": {
-    "edit": "deny",
-    "bash": "deny",
-    "webfetch": "deny"
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow",
+    "read": "allow",
+    "list": "allow",
+    "grep": "allow",
+    "glob": "allow"
   }
 }
