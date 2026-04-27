@@ -123,38 +123,63 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           cat > qwen-prompt.md <<EOF
-          Ты — строгий, но прагматичный code reviewer.
+          Ты — строгий, но прагматичный Go code reviewer.
 
-          Проверь изменения в Pull Request.
+          Проверь Pull Request #${PR_NUMBER}: ${PR_TITLE}
 
-          PR: #${PR_NUMBER}
-          Title: ${PR_TITLE}
           Base branch: ${BASE_REF}
           Head branch: ${HEAD_REF}
 
           Ниже дан diff текущей ветки PR относительно целевой ветки PR.
-          Смотри именно на изменения из diff.
+          Но НЕ ограничивайся только diff.
+
+          Обязательно используй доступные CLI tools, чтобы проверить изменения в контексте репозитория:
+
+          1. Посмотри структуру проекта.
+          2. Прочитай go.mod.
+          3. Прочитай изменённые файлы из diff.
+          4. Прочитай связанные файлы, которые импортируются или используются изменённым кодом.
+          5. Найди определения всех вызываемых функций и типов:
+            - ParseTicket
+            - ReadLines
+            - ticket2.Ticket
+            - ticket2.Process
+          6. Запусти одну или несколько проверок:
+            - go test ./...
+            - go test
+            - go vet ./...
+            Если команда не может быть выполнена, объясни почему.
+          7. Сравни вывод CLI-команд с анализом diff.
 
           Важно:
-          - Не завышай риск без причины.
-          - high ставь только если изменение ломает сборку, безопасность, данные пользователей, авторизацию, платежи, миграции или критический production-flow.
-          - medium ставь для потенциальных багов, невалидного кода, спорной логики.
-          - low ставь для косметики, документации, мелких правок.
-          - Если файл выглядит тестовым или случайным, явно напиши это.
+          - Не изменяй файлы.
+          - Не делай commit.
+          - Не делай push.
+          - Не исправляй код автоматически.
+          - Твоя задача — только review.
+          - Не выдумывай проблемы, которых нет.
+          - Если проблема подтверждается компиляцией или CLI-командой, явно напиши это.
+          - high ставь только если изменение ломает сборку, безопасность, данные пользователей, авторизацию, миграции или критический production-flow.
+          - medium ставь для потенциальных runtime panic, ошибок типов, невалидной бизнес-логики.
+          - low ставь для стиля, читаемости, minor issues.
 
           Ответь по-русски в формате:
 
           ## Краткое резюме
-          ...
+
+          ## Что проверил через CLI
+          Перечисли команды, которые ты запускал, и кратко результат.
 
           ## Найденные проблемы
+          Для каждой проблемы укажи:
           - severity: low / medium / high
-            file: путь к файлу
-            issue: описание проблемы
-            recommendation: что исправить
+          - file: путь к файлу
+          - line: примерная строка, если понятно
+          - issue: что не так
+          - evidence: чем подтверждается, например go test/go vet/чтение связанного файла
+          - recommendation: что исправить
 
           ## Что проверить тестами
-          ...
 
           ## Итоговый риск
           low / medium / high
@@ -168,12 +193,16 @@ jobs:
         env:
           YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
         run: |
-          cat qwen-prompt.md | qwen --prompt
-      - name: Run Qwen Code on PR diff
-        env:
-          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
-        run: |
-          cat qwen-prompt.md | qwen --prompt > qwen-review.md
+          set -e
+
+          cat qwen-prompt.md | qwen \
+            --prompt \
+            --approval-mode=yolo \
+            --debug \
+            --append-system-prompt "You are running in CI. Use CLI tools to inspect the repository, read files, run git commands, and run Go checks. Do not modify files. Do not commit. Do not push." \
+            > qwen-review.md
+
+          echo "Qwen review:"
           cat qwen-review.md
 
       - name: Post review comment to PR
