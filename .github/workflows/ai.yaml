@@ -123,7 +123,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           cat > qwen-prompt.md <<EOF
-          Ты — опытный code reviewer.
+          Ты — строгий, но прагматичный code reviewer.
 
           Проверь изменения в Pull Request.
 
@@ -135,14 +135,29 @@ jobs:
           Ниже дан diff текущей ветки PR относительно целевой ветки PR.
           Смотри именно на изменения из diff.
 
-          Нужно ответить по-русски в формате:
+          Важно:
+          - Не завышай риск без причины.
+          - high ставь только если изменение ломает сборку, безопасность, данные пользователей, авторизацию, платежи, миграции или критический production-flow.
+          - medium ставь для потенциальных багов, невалидного кода, спорной логики.
+          - low ставь для косметики, документации, мелких правок.
+          - Если файл выглядит тестовым или случайным, явно напиши это.
 
-          1. Краткое резюме изменений
-          2. Потенциальные баги
-          3. Проблемы безопасности
-          4. Риски обратной совместимости
-          5. Что стоит проверить тестами
-          6. Итоговый риск: low / medium / high
+          Ответь по-русски в формате:
+
+          ## Краткое резюме
+          ...
+
+          ## Найденные проблемы
+          - severity: low / medium / high
+            file: путь к файлу
+            issue: описание проблемы
+            recommendation: что исправить
+
+          ## Что проверить тестами
+          ...
+
+          ## Итоговый риск
+          low / medium / high
 
           Diff:
           EOF
@@ -154,3 +169,16 @@ jobs:
           YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
         run: |
           cat qwen-prompt.md | qwen --prompt
+      - name: Run Qwen Code on PR diff
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+        run: |
+          cat qwen-prompt.md | qwen --prompt > qwen-review.md
+          cat qwen-review.md
+
+      - name: Post review comment to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body-file qwen-review.md
