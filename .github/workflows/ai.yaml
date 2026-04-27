@@ -1,0 +1,80 @@
+name: Qwen Code Review
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  qwen-review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout triggering branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Qwen Code
+        run: |
+          npm install -g @qwen-code/qwen-code@latest
+          qwen --version
+
+      - name: Create Qwen settings
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+        run: |
+          mkdir -p .qwen
+
+          cat > .qwen/settings.json <<'EOF'
+          {
+            "modelProviders": {
+              "openai": [
+                {
+                  "id": "gpt://b1g0fdc0s8egb0178g1n/qwen3-235b-a22b-fp8/latest",
+                  "name": "Qwen3 235B (Yandex AI Studio)",
+                  "envKey": "YANDEX_API_KEY",
+                  "baseUrl": "https://llm.api.cloud.yandex.net/v1",
+                  "generationConfig": {
+                    "timeout": 120000,
+                    "maxRetries": 2,
+                    "contextWindowSize": 128000,
+                    "samplingParams": {
+                      "temperature": 0.3,
+                      "max_tokens": 8192
+                    }
+                  }
+                }
+              ]
+            },
+            "$version": 3,
+            "model": {
+              "name": "gpt://b1g0fdc0s8egb0178g1n/qwen3-235b-a22b-fp8/latest"
+            },
+            "security": {
+              "auth": {
+                "selectedType": "openai"
+              }
+            }
+          }
+          EOF
+
+      - name: Run Qwen Code
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+        run: |
+          qwen --help
