@@ -1,12 +1,12 @@
-name: Qwen Code Review
+name: Qwen PR Diff Review
 
 on:
-  push:
-    branches:
-      - "**"
   pull_request:
-    branches:
-      - "**"
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
 
 permissions:
   contents: read
@@ -18,11 +18,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout triggering branch
+      - name: Checkout PR source branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Show PR refs
+        env:
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "Base repo: $BASE_REPO"
+          echo "Base ref:  $BASE_REF"
+          echo "Head repo: $HEAD_REPO"
+          echo "Head ref:  $HEAD_REF"
+          echo "Head sha:  $HEAD_SHA"
+          git log --oneline -5
+
+      - name: Fetch PR target branch and create diff
+        env:
+          BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -e
+
+          git remote add base "https://github.com/${BASE_REPO}.git" || true
+          git fetch --no-tags --prune base "+refs/heads/${BASE_REF}:refs/remotes/base/${BASE_REF}"
+
+          echo "Merge base:"
+          git merge-base "refs/remotes/base/${BASE_REF}" HEAD
+
+          echo "Changed files:"
+          git diff --name-status "refs/remotes/base/${BASE_REF}...HEAD" | tee changed-files.txt
+
+          echo "Creating PR diff..."
+          git diff \
+            --find-renames \
+            --find-copies \
+            "refs/remotes/base/${BASE_REF}...HEAD" \
+            > pr.diff
+
+          echo "Diff size:"
+          wc -c pr.diff
+          echo "Diff preview:"
+          sed -n '1,120p' pr.diff
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -35,8 +79,6 @@ jobs:
           qwen --version
 
       - name: Create Qwen settings
-        env:
-          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
         run: |
           mkdir -p .qwen
 
@@ -73,8 +115,42 @@ jobs:
           }
           EOF
 
-      - name: Run Qwen Code
+      - name: Build Qwen prompt from PR diff
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          cat > qwen-prompt.md <<EOF
+          Ты — опытный code reviewer.
+
+          Проверь изменения в Pull Request.
+
+          PR: #${PR_NUMBER}
+          Title: ${PR_TITLE}
+          Base branch: ${BASE_REF}
+          Head branch: ${HEAD_REF}
+
+          Ниже дан diff текущей ветки PR относительно целевой ветки PR.
+          Смотри именно на изменения из diff.
+
+          Нужно ответить по-русски в формате:
+
+          1. Краткое резюме изменений
+          2. Потенциальные баги
+          3. Проблемы безопасности
+          4. Риски обратной совместимости
+          5. Что стоит проверить тестами
+          6. Итоговый риск: low / medium / high
+
+          Diff:
+          EOF
+
+          cat pr.diff >> qwen-prompt.md
+
+      - name: Run Qwen Code on PR diff
         env:
           YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
         run: |
-          qwen --help
+          cat qwen-prompt.md | qwen --prompt
